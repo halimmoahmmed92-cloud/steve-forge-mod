@@ -27,7 +27,7 @@ Run the runClient task.
 In a creative world, open the example tab and use the Steve Spawn Egg.
 
 To build a .jar for a launcher such as Prism, run the Gradle build task. The file appears in build/libs.
-
+Co-Authored-By: Claude <noreply@anthropic.com>
 Notes
 The mod id is still examplemod (from the Forge MDK template) and will be renamed later.
 Based on the Forge MDK. The Forge license is in LICENSE.txt.
