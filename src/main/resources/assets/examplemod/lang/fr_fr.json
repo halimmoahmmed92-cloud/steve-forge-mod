@@ -1,0 +1,11 @@
+{
+  "entity.examplemod.steve": "Steve",
+  "item.examplemod.steve_spawn_egg": "Œuf d'apparition de Steve",
+  "gui.examplemod.tablet.title": "Tablette de Steve",
+  "gui.examplemod.tablet.follow": "Suis-moi",
+  "gui.examplemod.tablet.chop": "Couper du bois",
+  "gui.examplemod.tablet.task.follow": "Tâche : te suit",
+  "gui.examplemod.tablet.task.chop": "Tâche : coupe du bois",
+  "gui.examplemod.tablet.need_axe": "Donne-lui une hache !",
+  "gui.examplemod.tablet.no_trees": "Steve : il n'y a plus d'arbres par ici !"
+}
