@@ -32,7 +32,7 @@ To build a `.jar` for a launcher such as Prism, run the Gradle **build** task. T
 ## Credits
 
 - **Idea, direction and in-game testing:** the repository owner.
-- **Code written with Claude** ([Claude Sonnet 5.5](https://www.anthropic.com/claude) by Anthropic), in a chat session.
+- **Code written with some from Claude** ([Claude Sonnet 5.5](https://www.anthropic.com/claude) by Anthropic), in a chat session.
 - Built on the Forge MDK template.
 
 ## Notes
