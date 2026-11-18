@@ -1,259 +1,379 @@
 package com.example.examplemod;
 
-import java.util.EnumSet;
-
 import net.minecraft.core.BlockPos;
-import net.minecraft.network.chat.Component;
+import net.minecraft.core.Direction;
+import net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.tags.ItemTags;
-import net.minecraft.world.InteractionHand;
-import net.minecraft.world.InteractionResult;
-import net.minecraft.world.ItemStackWithSlot;
-import net.minecraft.world.SimpleContainer;
-import net.minecraft.world.SimpleMenuProvider;
-import net.minecraft.world.entity.Entity;
+import net.minecraft.tags.FluidTags;
+import net.minecraft.world.Container;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.PathfinderMob;
 import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.ai.goal.FloatGoal;
-import net.minecraft.world.entity.ai.goal.Goal;
-import net.minecraft.world.entity.ai.goal.LookAtPlayerGoal;
 import net.minecraft.world.entity.ai.goal.MeleeAttackGoal;
-import net.minecraft.world.entity.ai.goal.RandomLookAroundGoal;
-import net.minecraft.world.entity.ai.goal.WaterAvoidingRandomStrollGoal;
-import net.minecraft.world.entity.ai.goal.target.HurtByTargetGoal;
-import net.minecraft.world.entity.ai.goal.target.NearestAttackableTargetGoal;
-import net.minecraft.world.entity.monster.Monster;
 import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
-import net.minecraft.world.level.block.Block;
-import net.minecraft.world.level.storage.ValueInput;
-import net.minecraft.world.level.storage.ValueOutput;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.Vec3;
 
-/**
- * Steve: a companion mob.
- * By default he follows the nearest player and fights hostile mobs.
- * Right-click him to open his tablet: give him tools, then give him a task.
- */
 public class SteveEntity extends PathfinderMob {
-    public static final int INVENTORY_SIZE = 9;
+    private static final double MIN_DISTANCE = 24.0;
+    private static final double MAX_DISTANCE = 44.0;
+    private static final int STARE_LIMIT = 50;
+    private static final int[][] DIRECTIONS = {
+        {1, 0}, {-1, 0}, {0, 1}, {0, -1}, {1, 1}, {1, -1}, {-1, 1}, {-1, -1}
+    };
 
-    /** Tools and items Steve carries (saved with him). */
-    private final SimpleContainer inventory = new SimpleContainer(INVENTORY_SIZE);
-    private SteveTask task = SteveTask.FOLLOW;
-    /** The spot around which he works (where you stood when you gave the order). */
-    private BlockPos workCenter = BlockPos.ZERO;
+    private enum Mode { STALK, SABOTAGE, STRIKE, HUNT }
+
+    private Mode mode = Mode.STALK;
+    private Player victim;
+    private Haunt.PendingChest chest;
+    private int stareTicks;
+    private int modeTicks;
+    private int cooldown = 400;
 
     public SteveEntity(EntityType<? extends SteveEntity> type, Level level) {
         super(type, level);
+        this.setInvulnerable(true);
+        this.setPersistenceRequired();
     }
 
-    /** Health, speed, damage and how far he can notice targets. */
     public static AttributeSupplier.Builder createAttributes() {
         return Mob.createMobAttributes()
-            .add(Attributes.MAX_HEALTH, 20.0)
+            .add(Attributes.MAX_HEALTH, 40.0)
             .add(Attributes.MOVEMENT_SPEED, 0.3)
-            .add(Attributes.ATTACK_DAMAGE, 3.0)
-            .add(Attributes.FOLLOW_RANGE, 32.0);
+            .add(Attributes.ATTACK_DAMAGE, 6.0)
+            .add(Attributes.FOLLOW_RANGE, 64.0);
     }
-
-    // ---- Inventory and tasks ----
-
-    public SimpleContainer getInventory() {
-        return this.inventory;
-    }
-
-    public SteveTask getTask() {
-        return this.task;
-    }
-
-    public BlockPos getWorkCenter() {
-        return this.workCenter;
-    }
-
-    public void setTask(SteveTask newTask, BlockPos center) {
-        this.task = newTask;
-        this.workCenter = center;
-        this.getNavigation().stop();
-    }
-
-    /** The first axe found in his inventory, or an empty stack. */
-    public ItemStack getAxe() {
-        for (int i = 0; i < this.inventory.getContainerSize(); i++) {
-            ItemStack stack = this.inventory.getItem(i);
-            if (stack.is(ItemTags.AXES)) {
-                return stack;
-            }
-        }
-        return ItemStack.EMPTY;
-    }
-
-    public boolean hasAxe() {
-        return !this.getAxe().isEmpty();
-    }
-
-    // ---- Behaviour ----
 
     @Override
     protected void registerGoals() {
-        // Lower number = higher priority
         this.goalSelector.addGoal(0, new FloatGoal(this));
-        this.goalSelector.addGoal(1, new MeleeAttackGoal(this, 1.2, true));
-        this.goalSelector.addGoal(2, new ChopWoodGoal(this));
-        this.goalSelector.addGoal(2, new FollowNearestPlayerGoal(this, 1.1, 4.0, 24.0));
-        this.goalSelector.addGoal(3, new WaterAvoidingRandomStrollGoal(this, 0.8) {
-            @Override
-            public boolean canUse() {
-                return SteveEntity.this.getTask() == SteveTask.FOLLOW && super.canUse();
-            }
-        });
-        this.goalSelector.addGoal(4, new LookAtPlayerGoal(this, Player.class, 8.0F));
-        this.goalSelector.addGoal(5, new RandomLookAroundGoal(this));
-
-        this.targetSelector.addGoal(1, new HurtByTargetGoal(this));
-        this.targetSelector.addGoal(2, new NearestAttackableTargetGoal<>(this, Monster.class, true));
+        this.goalSelector.addGoal(1, new MeleeAttackGoal(this, 1.3, true));
     }
 
-    @Override
-    public void tick() {
-        super.tick();
-        // If the axe is taken away from his inventory, he stops chopping
-        if (!this.level().isClientSide() && this.tickCount % 20 == 0
-            && this.task == SteveTask.CHOP_WOOD && !this.hasAxe()) {
-            this.setTask(SteveTask.FOLLOW, this.blockPosition());
-        }
-    }
-
-    /** Steve never despawns just because you walked away. */
     @Override
     public boolean removeWhenFarAway(double distanceToClosestPlayer) {
         return false;
     }
 
-    // ---- Right-click: open the tablet ----
-
     @Override
-    public InteractionResult mobInteract(Player player, InteractionHand hand) {
-        if (this.level().isClientSide()) {
-            return InteractionResult.SUCCESS;
+    public void tick() {
+        super.tick();
+        if (!(this.level() instanceof ServerLevel level) || this.tickCount % 2 != 0) {
+            return;
         }
-        if (player instanceof ServerPlayer serverPlayer) {
-            serverPlayer.openMenu(
-                new SimpleMenuProvider(
-                    (windowId, playerInventory, p) -> new SteveMenu(windowId, playerInventory, this),
-                    Component.translatable("gui.examplemod.tablet.title")),
-                buf -> buf.writeVarInt(this.getId()));
+        if (this.victim == null || !this.victim.isAlive() || this.victim.level() != this.level() || this.tickCount % 40 == 0) {
+            this.victim = level.getNearestPlayer(this, 160.0);
         }
-        return InteractionResult.SUCCESS_SERVER;
-    }
-
-    // ---- Saving and loading ----
-
-    @Override
-    protected void addAdditionalSaveData(ValueOutput output) {
-        super.addAdditionalSaveData(output);
-        ValueOutput.TypedOutputList<ItemStackWithSlot> items = output.list("TabletItems", ItemStackWithSlot.CODEC);
-        for (int i = 0; i < this.inventory.getContainerSize(); i++) {
-            ItemStack stack = this.inventory.getItem(i);
-            if (!stack.isEmpty()) {
-                items.add(new ItemStackWithSlot(i, stack));
+        if (this.victim == null) {
+            this.getNavigation().stop();
+            return;
+        }
+        if (this.mode != Mode.HUNT && this.isWatchedBy(this.victim)) {
+            this.stareTicks += 2;
+            this.getNavigation().stop();
+            this.getLookControl().setLookAt(this.victim, 30.0F, 30.0F);
+            if (this.stareTicks > STARE_LIMIT || this.distanceToSqr(this.victim) < 144.0) {
+                this.endAction();
+                this.relocate(this.victim);
             }
+            return;
         }
-        output.putInt("Task", this.task.ordinal());
-        output.putLong("WorkCenter", this.workCenter.asLong());
+        this.stareTicks = Math.max(0, this.stareTicks - 1);
+        switch (this.mode) {
+            case STALK -> this.stalk(level);
+            case SABOTAGE -> this.sabotage(level);
+            case STRIKE -> this.strike(level);
+            case HUNT -> this.hunt();
+        }
     }
 
-    @Override
-    protected void readAdditionalSaveData(ValueInput input) {
-        super.readAdditionalSaveData(input);
-        input.listOrEmpty("TabletItems", ItemStackWithSlot.CODEC).forEach(slot -> {
-            if (slot.isValidInContainer(this.inventory.getContainerSize())) {
-                this.inventory.setItem(slot.slot(), slot.stack());
+    private void stalk(ServerLevel level) {
+        double distance = this.distanceTo(this.victim);
+        this.getLookControl().setLookAt(this.victim, 10.0F, 10.0F);
+        if (this.cooldown > 0) {
+            this.cooldown -= 2;
+        } else if (this.chooseAction(level)) {
+            return;
+        }
+        if (distance > 110.0) {
+            this.relocate(this.victim);
+        } else if (distance > MAX_DISTANCE) {
+            this.getNavigation().moveTo(this.victim, 1.0);
+        } else if (distance < MIN_DISTANCE) {
+            Vec3 away = this.position().subtract(this.victim.position());
+            away = new Vec3(away.x, 0.0, away.z);
+            if (away.lengthSqr() < 1.0E-4) {
+                away = new Vec3(1.0, 0.0, 0.0);
             }
-        });
-        this.task = SteveTask.byId(input.getIntOr("Task", 0));
-        this.workCenter = BlockPos.of(input.getLongOr("WorkCenter", 0L));
+            away = away.normalize().scale(14.0);
+            this.getNavigation().moveTo(this.getX() + away.x, this.getY(), this.getZ() + away.z, 1.15);
+        } else {
+            this.getNavigation().stop();
+        }
     }
 
-    /** When Steve dies, what he carries drops on the ground. */
-    @Override
-    public void remove(Entity.RemovalReason reason) {
-        if (!this.level().isClientSide() && reason.shouldDestroy()) {
-            for (int i = 0; i < this.inventory.getContainerSize(); i++) {
-                ItemStack stack = this.inventory.removeItemNoUpdate(i);
-                if (!stack.isEmpty()) {
-                    Block.popResource(this.level(), this.blockPosition(), stack);
+    private boolean chooseAction(ServerLevel level) {
+        ThreatProfile profile = ThreatProfile.of(this.victim);
+        if (this.victim.getHealth() <= 7.0F && !profile.totem() && this.distanceTo(this.victim) < 60.0F) {
+            this.begin(Mode.HUNT);
+            return true;
+        }
+        if (!profile.canSurviveFall() && this.hazardDirection(level) != null) {
+            this.begin(Mode.STRIKE);
+            return true;
+        }
+        Haunt.PendingChest pending = Haunt.nextReady(this.victim, level.getGameTime());
+        if (pending != null) {
+            this.chest = pending;
+            this.begin(Mode.SABOTAGE);
+            return true;
+        }
+        if (this.random.nextInt(4) == 0 && this.snuffTorches(level)) {
+            this.cooldown = 600 + this.random.nextInt(1200);
+        } else {
+            this.cooldown = 100;
+        }
+        return false;
+    }
+
+    private void begin(Mode newMode) {
+        this.mode = newMode;
+        this.modeTicks = 0;
+        if (newMode == Mode.HUNT) {
+            this.setTarget(this.victim);
+        }
+    }
+
+    private void endAction() {
+        this.mode = Mode.STALK;
+        this.modeTicks = 0;
+        this.chest = null;
+        this.setTarget(null);
+        this.cooldown = 400 + this.random.nextInt(800);
+    }
+
+    private void sabotage(ServerLevel level) {
+        this.modeTicks += 2;
+        if (this.chest == null || this.modeTicks > 1200) {
+            this.endAction();
+            return;
+        }
+        BlockPos pos = this.chest.pos();
+        if (!level.hasChunkAt(pos) || !isStorage(level.getBlockState(pos))) {
+            Haunt.forget(this.victim.getUUID(), this.chest);
+            this.endAction();
+            return;
+        }
+        Vec3 center = Vec3.atCenterOf(pos);
+        if (this.victim.distanceToSqr(center) < 196.0) {
+            this.endAction();
+            return;
+        }
+        if (this.distanceToSqr(center) > 9.0) {
+            if (this.modeTicks == 2 && this.distanceToSqr(center) > 2304.0) {
+                this.relocateNear(level, pos);
+            }
+            this.getNavigation().moveTo(center.x, center.y, center.z, 1.2);
+            return;
+        }
+        this.burn(level, pos);
+        Haunt.forget(this.victim.getUUID(), this.chest);
+        this.endAction();
+        this.relocate(this.victim);
+    }
+
+    private void strike(ServerLevel level) {
+        this.modeTicks += 2;
+        Vec3 direction = this.hazardDirection(level);
+        if (direction == null || this.modeTicks > 400 || ThreatProfile.of(this.victim).canSurviveFall()) {
+            this.endAction();
+            return;
+        }
+        this.getLookControl().setLookAt(this.victim, 30.0F, 30.0F);
+        if (this.distanceTo(this.victim) > 2.6F) {
+            this.getNavigation().moveTo(this.victim, 1.5);
+            return;
+        }
+        this.victim.setDeltaMovement(direction.x * 0.9, 0.4, direction.z * 0.9);
+        if (this.victim instanceof ServerPlayer serverPlayer) {
+            serverPlayer.connection.send(new ClientboundSetEntityMotionPacket(serverPlayer));
+        }
+        this.endAction();
+        this.relocate(this.victim);
+    }
+
+    private void hunt() {
+        this.modeTicks += 2;
+        if (this.modeTicks > 600 || this.victim.getHealth() > 12.0F) {
+            this.endAction();
+            this.relocate(this.victim);
+            return;
+        }
+        this.setTarget(this.victim);
+    }
+
+    private Vec3 hazardDirection(ServerLevel level) {
+        BlockPos base = this.victim.blockPosition();
+        BlockPos floor = base.below();
+        if (!level.getBlockState(floor).isFaceSturdy(level, floor, Direction.UP)) {
+            return null;
+        }
+        int threshold = Math.min((int) this.victim.getHealth() + 3, 14);
+        Vec3 best = null;
+        int bestDrop = 0;
+        for (int[] d : DIRECTIONS) {
+            for (int step = 1; step <= 3; step++) {
+                BlockPos column = base.offset(d[0] * step, 0, d[1] * step);
+                if (!level.hasChunkAt(column) || !level.getBlockState(column).isAir()) {
+                    break;
+                }
+                int drop = this.dropBelow(level, column);
+                if (drop >= threshold && drop > bestDrop) {
+                    bestDrop = drop;
+                    best = new Vec3(d[0], 0.0, d[1]).normalize();
                 }
             }
         }
-        super.remove(reason);
+        return best;
     }
 
-    /** Walks toward the nearest player until he is close enough (only when his task is FOLLOW). */
-    private static class FollowNearestPlayerGoal extends Goal {
-        private final SteveEntity mob;
-        private final double speed;
-        private final double startDistanceSqr;
-        private final double searchRange;
-        private final double stopDistanceSqr;
-        private Player target;
-        private int recalcTimer;
-
-        FollowNearestPlayerGoal(SteveEntity mob, double speed, double stopDistance, double searchRange) {
-            this.mob = mob;
-            this.speed = speed;
-            this.stopDistanceSqr = stopDistance * stopDistance;
-            // Start walking once the player is a bit farther than the stop distance
-            this.startDistanceSqr = (stopDistance + 2.0) * (stopDistance + 2.0);
-            this.searchRange = searchRange;
-            this.setFlags(EnumSet.of(Goal.Flag.MOVE));
+    private int dropBelow(ServerLevel level, BlockPos column) {
+        int drop = 0;
+        for (int i = 1; i <= 24; i++) {
+            BlockState state = level.getBlockState(column.below(i));
+            if (state.getFluidState().is(FluidTags.LAVA)) {
+                return 99;
+            }
+            if (!state.getFluidState().isEmpty()) {
+                return 0;
+            }
+            if (!state.isAir()) {
+                break;
+            }
+            drop++;
         }
+        return drop;
+    }
 
-        @Override
-        public boolean canUse() {
-            if (this.mob.getTask() != SteveTask.FOLLOW) {
-                return false;
+    private static boolean isStorage(BlockState state) {
+        return state.is(Blocks.CHEST) || state.is(Blocks.TRAPPED_CHEST) || state.is(Blocks.BARREL);
+    }
+
+    private void burn(ServerLevel level, BlockPos pos) {
+        BlockState state = level.getBlockState(pos);
+        java.util.List<BlockPos> parts = new java.util.ArrayList<>();
+        parts.add(pos);
+        if (state.is(Blocks.CHEST) || state.is(Blocks.TRAPPED_CHEST)) {
+            for (Direction direction : Direction.Plane.HORIZONTAL) {
+                BlockPos neighbor = pos.relative(direction);
+                if (level.getBlockState(neighbor).is(state.getBlock())) {
+                    parts.add(neighbor);
+                }
             }
-            Player player = this.mob.level().getNearestPlayer(this.mob, this.searchRange);
-            if (player == null || player.isSpectator()) {
-                return false;
+        }
+        for (BlockPos part : parts) {
+            BlockEntity blockEntity = level.getBlockEntity(part);
+            if (blockEntity instanceof Container container) {
+                container.clearContent();
             }
-            if (this.mob.distanceToSqr(player) < this.startDistanceSqr) {
-                return false;
+            level.setBlock(part, Blocks.FIRE.defaultBlockState(), 3);
+        }
+    }
+
+    private boolean snuffTorches(ServerLevel level) {
+        Vec3 view = this.victim.getViewVector(1.0F);
+        Vec3 eyes = this.victim.getEyePosition();
+        BlockPos origin = this.victim.blockPosition();
+        int removed = 0;
+        for (BlockPos pos : BlockPos.betweenClosed(origin.offset(-12, -4, -12), origin.offset(12, 4, 12))) {
+            BlockState state = level.getBlockState(pos);
+            boolean torch = state.is(Blocks.TORCH) || state.is(Blocks.WALL_TORCH)
+                || state.is(Blocks.SOUL_TORCH) || state.is(Blocks.SOUL_WALL_TORCH);
+            if (!torch) {
+                continue;
             }
-            this.target = player;
+            Vec3 toTorch = Vec3.atCenterOf(pos).subtract(eyes).normalize();
+            if (toTorch.dot(view) > -0.2) {
+                continue;
+            }
+            level.setBlock(pos, Blocks.AIR.defaultBlockState(), 3);
+            removed++;
+            if (removed >= 2) {
+                break;
+            }
+        }
+        return removed > 0;
+    }
+
+    private boolean isWatchedBy(Player target) {
+        Vec3 toMe = this.getEyePosition().subtract(target.getEyePosition());
+        double distance = toMe.length();
+        if (distance < 1.0E-4) {
             return true;
         }
+        double alignment = target.getViewVector(1.0F).dot(toMe.scale(1.0 / distance));
+        return alignment > 0.8 && target.hasLineOfSight(this);
+    }
 
-        @Override
-        public boolean canContinueToUse() {
-            return this.mob.getTask() == SteveTask.FOLLOW
-                && this.target != null
-                && this.target.isAlive()
-                && !this.target.isSpectator()
-                && this.mob.distanceToSqr(this.target) > this.stopDistanceSqr;
+    public boolean relocate(Player target) {
+        if (!(this.level() instanceof ServerLevel level)) {
+            return false;
         }
-
-        @Override
-        public void start() {
-            this.recalcTimer = 0;
-        }
-
-        @Override
-        public void tick() {
-            if (--this.recalcTimer <= 0) {
-                this.recalcTimer = 10;
-                this.mob.getNavigation().moveTo(this.target, this.speed);
+        for (int i = 0; i < 24; i++) {
+            double angle = this.random.nextDouble() * Math.PI * 2.0;
+            double distance = 30.0 + this.random.nextDouble() * 14.0;
+            BlockPos around = BlockPos.containing(
+                target.getX() + Math.cos(angle) * distance, target.getY(), target.getZ() + Math.sin(angle) * distance);
+            BlockPos spot = findStandable(level, around);
+            if (spot == null) {
+                continue;
+            }
+            this.setPos(spot.getX() + 0.5, spot.getY(), spot.getZ() + 0.5);
+            this.getNavigation().stop();
+            this.stareTicks = 0;
+            if (!this.isWatchedBy(target)) {
+                return true;
             }
         }
+        return false;
+    }
 
-        @Override
-        public void stop() {
-            this.target = null;
-            this.mob.getNavigation().stop();
+    private void relocateNear(ServerLevel level, BlockPos pos) {
+        for (int i = 0; i < 16; i++) {
+            double angle = this.random.nextDouble() * Math.PI * 2.0;
+            double distance = 10.0 + this.random.nextDouble() * 6.0;
+            BlockPos around = BlockPos.containing(
+                pos.getX() + Math.cos(angle) * distance, pos.getY(), pos.getZ() + Math.sin(angle) * distance);
+            BlockPos spot = findStandable(level, around);
+            if (spot != null) {
+                this.setPos(spot.getX() + 0.5, spot.getY(), spot.getZ() + 0.5);
+                this.getNavigation().stop();
+                return;
+            }
         }
+    }
+
+    private static BlockPos findStandable(ServerLevel level, BlockPos around) {
+        if (!level.hasChunkAt(around)) {
+            return null;
+        }
+        for (int y = around.getY() + 10; y >= around.getY() - 24; y--) {
+            BlockPos pos = new BlockPos(around.getX(), y, around.getZ());
+            if (level.isEmptyBlock(pos) && level.isEmptyBlock(pos.above())) {
+                BlockPos below = pos.below();
+                if (level.getBlockState(below).isFaceSturdy(level, below, Direction.UP)) {
+                    return pos;
+                }
+            }
+        }
+        return null;
     }
 }

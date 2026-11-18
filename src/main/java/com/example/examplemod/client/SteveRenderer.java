@@ -9,10 +9,6 @@ import net.minecraft.client.renderer.entity.HumanoidMobRenderer;
 import net.minecraft.client.renderer.entity.state.HumanoidRenderState;
 import net.minecraft.resources.Identifier;
 
-/**
- * Draws Steve with a normal humanoid body and the game's built-in Steve skin,
- * so no texture file is needed in the mod.
- */
 public class SteveRenderer extends HumanoidMobRenderer<SteveEntity, HumanoidRenderState, HumanoidModel<HumanoidRenderState>> {
     private static final Identifier TEXTURE = Identifier.withDefaultNamespace("textures/entity/player/wide/steve.png");
 

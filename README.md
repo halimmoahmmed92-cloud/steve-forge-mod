@@ -1,25 +1,19 @@
-# Steve (Forge mod)
+# Steve (Forge horror mod)
 
-A Minecraft Forge mod that adds **Steve**, a companion mob who follows you, fights hostile mobs, and can be given jobs from a tablet.
+A Minecraft Forge mod where **Steve** is not your friend. He watches you from far away, stays out of sight, and quietly ruins your day.
 
 > Work in progress. Built for **Minecraft 26.1.2** with **Forge 26.1.2-64.1.6**.
 
-## Features
+## Behaviour
 
-- **Steve mob** with the vanilla Steve skin (no extra textures needed).
-- **Spawn egg** in the creative tab so you can place him in the world.
-- **Follows you** and attacks hostile mobs (and anything that hurts him).
-- **Tablet** (right-click Steve):
-  - his own 9-slot inventory,
-  - **Follow me** button,
-  - **Chop wood** button, unlocked when he carries an axe. He looks for logs around the spot where you gave the order, chops them and keeps the wood.
-- His inventory and task are saved with him, and drop if he dies.
-
-## Planned
-
-- Mining with a pickaxe, farming with a hoe, digging with a shovel (tasks come from the tools in his inventory).
-- Axe durability, tool shown in his hand.
-- Chat lines and more helper behaviour.
+- **Stalker**: Steve keeps 24 to 44 blocks away. If you look at him for too long, or get too close, he vanishes and reappears somewhere else out of your line of sight.
+- **Hidden arrival**: in the dark (light level 7 or lower) he can appear on his own near you.
+- **Chest saboteur**: after you open a chest or barrel and walk away, Steve walks to it later, empties it and sets it on fire.
+- **Inventory aware**: he checks what you carry (water bucket, elytra, totem of undying, weapons) to choose his moves.
+- **Cliff push**: if you stand near a big drop or lava and carry nothing that saves you from a fall, he runs at you and shoves you over the edge.
+- **Torch snuffer**: he removes torches behind your back.
+- **Finisher**: if you are badly hurt and have no totem, he attacks.
+- He cannot be hurt.
 
 ## Requirements
 
@@ -29,16 +23,16 @@ A Minecraft Forge mod that adds **Steve**, a companion mob who follows you, figh
 ## Run it
 
 1. Clone this repository and open it in IntelliJ IDEA as a Gradle project.
-2. Wait for the first Gradle sync (it downloads Minecraft and Forge, so it can take a while).
+2. Wait for the first Gradle sync.
 3. Run the **runClient** task.
-4. In a creative world, open the example tab and use the **Steve Spawn Egg**.
+4. Use the **Steve Spawn Egg** from the example tab, or just play in the dark.
 
 To build a `.jar` for a launcher such as Prism, run the Gradle **build** task. The file appears in `build/libs`.
 
 ## Credits
 
 - **Idea, direction and in-game testing:** the repository owner.
-- **Code written with Claude** ([Claude Sonnet 5.5](https://www.anthropic.com/claude) by Anthropic), in a chat session: the Steve mob, spawn egg, tablet screen and wood-chopping behaviour.
+- **Code written with Claude** ([Claude Sonnet 5.5](https://www.anthropic.com/claude) by Anthropic), in a chat session.
 - Built on the Forge MDK template.
 
 ## Notes
