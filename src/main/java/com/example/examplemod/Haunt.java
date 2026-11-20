@@ -55,7 +55,7 @@ public final class Haunt {
         if (level.getMaxLocalRawBrightness(player.blockPosition()) > 7) {
             return;
         }
-        if (level.random.nextInt(60) != 0) {
+        if (level.getRandom().nextInt(60) != 0) {
             return;
         }
         if (!level.getEntitiesOfClass(SteveEntity.class, player.getBoundingBox().inflate(160.0)).isEmpty()) {

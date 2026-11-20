@@ -1,11 +1,16 @@
 package com.example.examplemod;
 
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.tags.FluidTags;
+import net.minecraft.util.Mth;
 import net.minecraft.world.Container;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.Mob;
@@ -15,16 +20,17 @@ import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.ai.goal.FloatGoal;
 import net.minecraft.world.entity.ai.goal.MeleeAttackGoal;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.levelgen.Heightmap;
+import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
 public class SteveEntity extends PathfinderMob {
-    private static final double MIN_DISTANCE = 24.0;
-    private static final double MAX_DISTANCE = 44.0;
-    private static final int STARE_LIMIT = 50;
+    private static final int STARE_LIMIT = 20;
     private static final int[][] DIRECTIONS = {
         {1, 0}, {-1, 0}, {0, 1}, {0, -1}, {1, 1}, {1, -1}, {-1, 1}, {-1, -1}
     };
@@ -37,6 +43,7 @@ public class SteveEntity extends PathfinderMob {
     private int stareTicks;
     private int modeTicks;
     private int cooldown = 400;
+    private int relocateDelay;
 
     public SteveEntity(EntityType<? extends SteveEntity> type, Level level) {
         super(type, level);
@@ -80,9 +87,11 @@ public class SteveEntity extends PathfinderMob {
             this.stareTicks += 2;
             this.getNavigation().stop();
             this.getLookControl().setLookAt(this.victim, 30.0F, 30.0F);
-            if (this.stareTicks > STARE_LIMIT || this.distanceToSqr(this.victim) < 144.0) {
+            if (this.stareTicks > STARE_LIMIT || this.distanceToSqr(this.victim) < 16.0) {
                 this.endAction();
-                this.relocate(this.victim);
+                if (!this.relocate(this.victim)) {
+                    this.discard();
+                }
             }
             return;
         }
@@ -96,27 +105,21 @@ public class SteveEntity extends PathfinderMob {
     }
 
     private void stalk(ServerLevel level) {
-        double distance = this.distanceTo(this.victim);
         this.getLookControl().setLookAt(this.victim, 10.0F, 10.0F);
         if (this.cooldown > 0) {
             this.cooldown -= 2;
         } else if (this.chooseAction(level)) {
             return;
         }
-        if (distance > 110.0) {
-            this.relocate(this.victim);
-        } else if (distance > MAX_DISTANCE) {
-            this.getNavigation().moveTo(this.victim, 1.0);
-        } else if (distance < MIN_DISTANCE) {
-            Vec3 away = this.position().subtract(this.victim.position());
-            away = new Vec3(away.x, 0.0, away.z);
-            if (away.lengthSqr() < 1.0E-4) {
-                away = new Vec3(1.0, 0.0, 0.0);
-            }
-            away = away.normalize().scale(14.0);
-            this.getNavigation().moveTo(this.getX() + away.x, this.getY(), this.getZ() + away.z, 1.15);
-        } else {
-            this.getNavigation().stop();
+        if (this.relocateDelay > 0) {
+            this.relocateDelay -= 2;
+            return;
+        }
+        boolean tooFar = this.distanceTo(this.victim) > 28.0F;
+        boolean lostView = this.tickCount % 60 == 0 && this.isSheltered(level, this.victim)
+            && !this.clearView(level, this.getEyePosition(), this.victim.getEyePosition());
+        if ((tooFar || lostView) && !this.relocate(this.victim)) {
+            this.relocateDelay = 40;
         }
     }
 
@@ -320,30 +323,137 @@ public class SteveEntity extends PathfinderMob {
             return true;
         }
         double alignment = target.getViewVector(1.0F).dot(toMe.scale(1.0 / distance));
-        return alignment > 0.8 && target.hasLineOfSight(this);
+        return alignment > 0.8 && this.level() instanceof ServerLevel level
+            && this.clearView(level, target.getEyePosition(), this.getEyePosition());
+    }
+
+    private boolean clearView(ServerLevel level, Vec3 from, Vec3 to) {
+        return level.clip(new ClipContext(from, to, ClipContext.Block.VISUAL, ClipContext.Fluid.NONE, this)).getType()
+            == HitResult.Type.MISS;
+    }
+
+    private boolean isSheltered(ServerLevel level, Player target) {
+        return !level.canSeeSky(target.blockPosition().above());
     }
 
     public boolean relocate(Player target) {
         if (!(this.level() instanceof ServerLevel level)) {
             return false;
         }
+        List<Vec3> candidates = this.isSheltered(level, target) ? this.windowSpots(level, target) : this.coverSpots(level, target);
+        if (candidates.isEmpty()) {
+            candidates = this.distantSpots(level, target);
+        }
+        Vec3 previous = this.position();
+        for (Vec3 spot : candidates) {
+            this.setPos(spot.x, spot.y, spot.z);
+            if (!this.isWatchedBy(target)) {
+                this.getNavigation().stop();
+                this.stareTicks = 0;
+                return true;
+            }
+        }
+        this.setPos(previous.x, previous.y, previous.z);
+        return false;
+    }
+
+    private static List<Vec3> nearest(List<Vec3> spots, Player target) {
+        Vec3 origin = target.position();
+        spots.sort(Comparator.comparingDouble(spot -> spot.distanceToSqr(origin)));
+        return spots.size() > 8 ? new ArrayList<>(spots.subList(0, 8)) : spots;
+    }
+
+    private List<Vec3> windowSpots(ServerLevel level, Player target) {
+        List<Vec3> spots = new ArrayList<>();
+        Vec3 eyes = target.getEyePosition();
+        for (int i = 0; i < 80; i++) {
+            double angle = this.random.nextDouble() * Math.PI * 2.0;
+            double distance = 5.0 + this.random.nextDouble() * 11.0;
+            BlockPos around = BlockPos.containing(
+                target.getX() + Math.cos(angle) * distance, target.getY(), target.getZ() + Math.sin(angle) * distance);
+            BlockPos spot = findStandableBetween(level, around, target.getBlockY() + 3, target.getBlockY() - 4);
+            if (spot == null || !level.canSeeSky(spot.above())) {
+                continue;
+            }
+            Vec3 pos = new Vec3(spot.getX() + 0.5, spot.getY(), spot.getZ() + 0.5);
+            if (this.clearView(level, pos.add(0.0, 1.62, 0.0), eyes)) {
+                spots.add(pos);
+            }
+        }
+        return nearest(spots, target);
+    }
+
+    private List<Vec3> coverSpots(ServerLevel level, Player target) {
+        List<Vec3> spots = new ArrayList<>();
+        int px = Mth.floor(target.getX());
+        int pz = Mth.floor(target.getZ());
+        int py = target.getBlockY();
+        for (int dx = -22; dx <= 22; dx++) {
+            for (int dz = -22; dz <= 22; dz++) {
+                int squared = dx * dx + dz * dz;
+                if (squared < 36 || squared > 484) {
+                    continue;
+                }
+                int ox = px + dx;
+                int oz = pz + dz;
+                if (!level.hasChunkAt(new BlockPos(ox, py, oz))) {
+                    continue;
+                }
+                int height = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, ox, oz);
+                double dirX = ox + 0.5 - target.getX();
+                double dirZ = oz + 0.5 - target.getZ();
+                double length = Math.sqrt(dirX * dirX + dirZ * dirZ);
+                dirX /= length;
+                dirZ /= length;
+                for (int side = -1; side <= 1; side += 2) {
+                    double sx = ox + 0.5 + dirX * 1.2 - dirZ * 0.5 * side;
+                    double sz = oz + 0.5 + dirZ * 1.2 + dirX * 0.5 * side;
+                    int bx = Mth.floor(sx);
+                    int bz = Mth.floor(sz);
+                    if (!level.hasChunkAt(new BlockPos(bx, py, bz))) {
+                        continue;
+                    }
+                    int standY = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, bx, bz);
+                    int rise = height - standY;
+                    if (rise < 2 || rise > 8 || !this.canStandAt(level, sx, standY, sz)) {
+                        continue;
+                    }
+                    spots.add(new Vec3(sx, standY, sz));
+                }
+            }
+        }
+        return nearest(spots, target);
+    }
+
+    private boolean canStandAt(ServerLevel level, double x, int y, double z) {
+        BlockPos below = BlockPos.containing(x, y - 1, z);
+        if (!level.getFluidState(below).isEmpty() || !level.getBlockState(below).isFaceSturdy(level, below, Direction.UP)) {
+            return false;
+        }
+        for (int cx = -1; cx <= 1; cx += 2) {
+            for (int cz = -1; cz <= 1; cz += 2) {
+                BlockPos feet = BlockPos.containing(x + cx * 0.3, y, z + cz * 0.3);
+                if (!level.isEmptyBlock(feet) || !level.isEmptyBlock(feet.above())) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    private List<Vec3> distantSpots(ServerLevel level, Player target) {
+        List<Vec3> spots = new ArrayList<>();
         for (int i = 0; i < 24; i++) {
             double angle = this.random.nextDouble() * Math.PI * 2.0;
             double distance = 30.0 + this.random.nextDouble() * 14.0;
             BlockPos around = BlockPos.containing(
                 target.getX() + Math.cos(angle) * distance, target.getY(), target.getZ() + Math.sin(angle) * distance);
             BlockPos spot = findStandable(level, around);
-            if (spot == null) {
-                continue;
-            }
-            this.setPos(spot.getX() + 0.5, spot.getY(), spot.getZ() + 0.5);
-            this.getNavigation().stop();
-            this.stareTicks = 0;
-            if (!this.isWatchedBy(target)) {
-                return true;
+            if (spot != null) {
+                spots.add(new Vec3(spot.getX() + 0.5, spot.getY(), spot.getZ() + 0.5));
             }
         }
-        return false;
+        return spots;
     }
 
     private void relocateNear(ServerLevel level, BlockPos pos) {
@@ -366,6 +476,22 @@ public class SteveEntity extends PathfinderMob {
             return null;
         }
         for (int y = around.getY() + 10; y >= around.getY() - 24; y--) {
+            BlockPos pos = new BlockPos(around.getX(), y, around.getZ());
+            if (level.isEmptyBlock(pos) && level.isEmptyBlock(pos.above())) {
+                BlockPos below = pos.below();
+                if (level.getBlockState(below).isFaceSturdy(level, below, Direction.UP)) {
+                    return pos;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static BlockPos findStandableBetween(ServerLevel level, BlockPos around, int top, int bottom) {
+        if (!level.hasChunkAt(around)) {
+            return null;
+        }
+        for (int y = top; y >= bottom; y--) {
             BlockPos pos = new BlockPos(around.getX(), y, around.getZ());
             if (level.isEmptyBlock(pos) && level.isEmptyBlock(pos.above())) {
                 BlockPos below = pos.below();
